@@ -25,6 +25,42 @@ open_url() {
     fi
 }
 
+get_jira_key() {
+    local jira_key
+    jira_key="$(tmux show -gqv '@fzf-url-jira-key')"
+    if [[ -n "$jira_key" ]]; then
+        echo "$jira_key"
+    fi
+}
+
+get_jira_key_matcher() {
+    local jira_key
+    jira_key=$(get_jira_key)
+    if [[ -n "$jira_key" ]]; then
+        printf '(%s-[0-9]{1,})' "$jira_key"
+    fi
+}
+
+open_jira() {
+    if hash jira &>/dev/null; then
+        jira browse "$@"
+    else
+        tmux display -d 2000 "tmux-fzf-url: No \`jira\` cli tool in path"
+    fi
+}
+
+copy() {
+    local os
+    os=$(uname)
+    if [[ "$os" == Darwin ]]; then
+        echo -n "$@" |pbcopy
+    elif [[ "$os" == Linux ]]; then
+        echo -n "$@" |xclip -selection clipboard
+    else
+        tmux display -d 2000 "tmux-fzf-url: Unable to determine OS to set clipboard copy command"
+    fi
+}
+
 
 limit='screen'
 [[ $# -ge 2 ]] && limit=$2
@@ -40,12 +76,14 @@ wwws=$(echo "$content" |grep -oE '(http?s://)?www\.[a-zA-Z](-?[a-zA-Z0-9])+\.[a-
 ips=$(echo "$content" |grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(:[0-9]{1,5})?(/\S+)*' |sed 's/^\(.*\)$/http:\/\/\1/')
 gits=$(echo "$content" |grep -oE '(ssh://)?git@\S*' | sed 's/:/\//g' | sed 's/^\(ssh\/\/\/\)\{0,1\}git@\(.*\)$/https:\/\/\2/')
 gh=$(echo "$content" |grep -oE "['\"]([A-Za-z0-9-]*/[.A-Za-z0-9-]*)['\"]" | sed "s/'\|\"//g" | sed 's#.#https://github.com/&#')
+jiras=$(echo "$content" |grep -oE "$(printf '(%s)' "$(get_jira_key_matcher)")")
+
 
 if [[ $# -ge 1 && "$1" != '' ]]; then
     extras=$(echo "$content" |eval "$1")
 fi
 
-items=$(printf '%s\n' "${urls[@]}" "${wwws[@]}" "${gh[@]}" "${ips[@]}" "${gits[@]}" "${extras[@]}" |
+items=$(printf '%s\n' "${urls[@]}" "${wwws[@]}" "${gh[@]}" "${ips[@]}" "${gits[@]}" "${jiras[@]}" "${extras[@]}" |
     grep -v '^$' |
     sort -u |
     nl -w3 -s '  '
@@ -54,5 +92,12 @@ items=$(printf '%s\n' "${urls[@]}" "${wwws[@]}" "${gh[@]}" "${ips[@]}" "${gits[@
 
 fzf_filter <<< "$items" | awk '{print $2}' | \
     while read -r chosen; do
-        open_url "$chosen" &>"/tmp/tmux-$(id -u)-fzf-url.log"
+        if [[ "$chosen" == $(get_jira_key)* ]]; then
+            open_jira "$chosen" &>"/tmp/tmux-$(id -u)-fzf-url.log"
+        else
+            open_url "$chosen" &>"/tmp/tmux-$(id -u)-fzf-url.log"
+        fi
+        if [[ -n "$(tmux show -gqv '@fzf-url-copy')" ]]; then
+            copy "$chosen"
+        fi
     done
